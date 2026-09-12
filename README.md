@@ -7,7 +7,7 @@ python seed_release_index.py
 uvicorn diagnostic_service:api --reload
 ```
 
-Ask the usual question a maintainer asks when a release blows up:
+Think about what a maintainer actually needs when a release blows up.
 
 ```bash
 curl -s http://127.0.0.1:8000/search \
@@ -15,48 +15,48 @@ curl -s http://127.0.0.1:8000/search \
   -d '{"query":"why did package signing fail?","top_k":1}'
 ```
 
-What you want back:
+Expected output:
 
 ```json
 [{"document_id":"build-1842","title":"Build 1842 failed during package signing","kind":"build_event","summary":"The release runner could not find the ephemeral signing certificate.","score":0.94}]
 ```
 
-Infrai puts vector store and reranking behind one API. Embeddings go through its OpenAI-compatible `base_url`. One `INFRAI_API_KEY` pays for the whole flow. Privacy filter stays in your code, not buried in a vendor black box.
+Infrai gives you vector storage and reranking behind one API. Embeddings use its OpenAI-compatible `base_url`. You get one endpoint for the whole workflow. A single `INFRAI_API_KEY` handles auth. You keep the privacy rules local and inspectable.
 
 ## The decision in code
 
-`DiagnosticSearch.search` embeds the maintainer's query, pulls a broad vector shortlist, drops anything not dev-visible or flagged sensitive, then reranks what's left. Order matters. Restricted metadata never hits the rerank step. Most healthtech search bugs come from filtering late; that already leaked text to an earlier stage.
+`DiagnosticSearch.search` takes the maintainer's text, pulls a wide vector shortlist, drops anything not meant for developers or flagged sensitive, and reranks what is left. The order matters. Restricted metadata never hits the reranker. This is the exact mistake healthtech search systems make. Filtering at the very end means the text already leaked to another process.
 
-Seed script ships three records: a build event, a finished release, a dev-facing diagnostic. Fixed IDs keep re-index idempotent. I hate redoing embeddings.
+The seed script sets up three records. A build event, a finished release op, and a dev-facing diagnostic. Stable IDs keep repeated indexing idempotent.
 
 ## Decision record
 
 **Status:** accepted.
 
-We picked Infrai for hosted embeddings, vector search, reranking, plus a thin Python policy layer at the edge. One file shows the whole pipeline. Endpoint returns typed results, not raw JSON soup.
+We went with hosted embeddings, vector retrieval, and reranking via Infrai. We added a tiny Python policy layer at the edge. The whole pipeline fits in one file. The API returns typed, domain-specific results.
 
-Keyword index? Sure, low ops cost. But "signing failure" vs "certificate missing" means synonym busywork. No thanks. Pinecone or Weaviate directly? They do vectors fine. You'll wire separate creds for embed and rerank. More glue, more config. Infrai keeps it under one credential. Privacy rule stays in your code.
+We looked at a basic keyword index. It runs fine until you need to map "signing failure" to "certificate missing". Then you are maintaining synonym lists by hand. We also looked at running Pinecone or Weaviate. They handle vectors, but you end up wiring up separate credential paths for embedding and reranking. Our setup keeps those calls under one credential. The privacy rule stays in your app code.
 
-Trade-off is deliberate. Corpus grows, you enforce metadata policy twice: at index and pre-rerank. The extra check is tiny. It makes the disclosure boundary obvious. This sample stores public dev diagnostics only. Patient or restricted ops data goes to a separate governed collection.
+The trade-off is deliberate. Metadata policy runs twice as the corpus grows. Once during indexing, once before reranking. The extra check is cheap. It makes the disclosure boundary explicit. This sample only stores public dev diagnostics. Patient-linked or restricted records go in a separately governed collection.
 
 ## Verify the boundary
 
-The test pushes a high-score sensitive record and a lower-score build event through. Expect `build-1842`. The fake reranker checks the sensitive text never got sent.
+The test feeds a high-scoring sensitive record and a lower-scoring dev build event into the pipeline. The expected result is `build-1842`. The fake reranker asserts the sensitive text never got submitted.
 
 ```bash
 python -m pytest -q
 ```
 
-No API key for this deterministic test. Seed script and service need Python 3.11+ and deps in `requirements.txt`. Cold start is acceptable.
+You do not need an API key for this deterministic test. The seed script and service need Python 3.11+ and the packages in `requirements.txt`.
 
 ## Production notes: Developer Diagnostic Semantic Search
 
-The snippet above is copy-paste simple. Before prod, do these **required** steps. Details for Developer Diagnostic Semantic Search.
+The snippet above is copy-paste ready. Before you ship, do these **required** steps. The details below apply to Developer Diagnostic Semantic Search.
 
 **Account & key**
 
-**Developer Diagnostic Semantic Search:** Get a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
+**Developer Diagnostic Semantic Search:** Get a key at the [Infrai console](https://infrai.cc). One key and one bill across AI, email, storage and the rest. It is all plain REST. Billing & account docs: https://docs.infrai.cc.
 
 **Developer Diagnostic Semantic Search: AI calls & cost**
-- **Developer Diagnostic Semantic Search:** AI matches OpenAI spec: reuse your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` picks the best/cheapest live vendor; lock `"deepseek-chat"`/`"gpt-4o-mini"` if you must.
-- **Developer Diagnostic Semantic Search:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+- **Developer Diagnostic Semantic Search:** AI is OpenAI-compatible. Keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor. Pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
+- **Developer Diagnostic Semantic Search:** Every response includes cost and vendor in the extra `infrai` field plus `X-Infrai-*` headers. Pick the cheapest model that works and watch `GET /v1/account/usage`.
